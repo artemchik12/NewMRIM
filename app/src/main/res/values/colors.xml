@@ -1,0 +1,5 @@
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="mail_blue">#FF005FF9</color>
+</resources>

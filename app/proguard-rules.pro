@@ -1,0 +1,2 @@
+-keepattributes *Annotation*
+-keep class org.artemchik.newmrim.protocol.** { *; }
