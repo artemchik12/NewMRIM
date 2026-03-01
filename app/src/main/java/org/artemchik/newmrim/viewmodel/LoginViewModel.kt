@@ -67,7 +67,7 @@ class LoginViewModel @Inject constructor(
             }
         }
 
-        // Слушаем состояние
+
         viewModelScope.launch {
             mrimClient.connectionState.collect { state ->
                 when (state) {

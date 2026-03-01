@@ -199,7 +199,6 @@ class MrimClient {
             groupId = uls.getOrElse(1) { 0u }.toInt(),
             email = strs.getOrElse(0) { "" },
             nickname = strs.getOrElse(1) { "" }.ifEmpty { strs.getOrElse(0) { "" } },
-            // ═══ FIX: по документации 0 = авторизован, 1 = не авторизован ═══
             authorized = uls.getOrElse(2) { 0u } == 0u,
             status = uls.getOrElse(3) { MrimConstants.STATUS_OFFLINE },
             phone = strs.getOrElse(2) { "" },
