@@ -22,9 +22,11 @@ jobs:
           cache: gradle
 
       - name: Make Gradle wrapper executable
+        working-directory: ./app
         run: chmod +x gradlew
 
       - name: Build release APK
+        working-directory: ./app
         run: ./gradlew assembleRelease
 
       - name: Upload APK artifact
