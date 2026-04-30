@@ -23,7 +23,8 @@ class MrimClient(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pendingCredentials: Pair<String, String>? = null
     private var currentEmail: String = ""
-    val currentUserEmail: String get() = currentEmail   // публичный доступ для Repository
+    private var currentPassword: String = ""
+    val currentUserEmail: String get() = currentEmail
     private var _serverConfig = ServerConfig()
     val serverConfig: ServerConfig get() = _serverConfig
 
@@ -63,7 +64,7 @@ class MrimClient(private val context: Context) {
     private fun nextSeq(): UInt = seqCounter.incrementAndGet().toUInt()
 
     suspend fun login(email: String, password: String, config: ServerConfig = ServerConfig()): Result<Unit> {
-        currentEmail = email; _serverConfig = config; _state.value = ConnectionState.Connecting
+        currentEmail = email; currentPassword = password; _serverConfig = config; _state.value = ConnectionState.Connecting
         val result = connection.connect(config)
         if (result.isFailure) { _state.value = ConnectionState.Error(result.exceptionOrNull()?.message ?: "Connection failed"); return result }
         _state.value = ConnectionState.Connected; pendingCredentials = Pair(email, password)
@@ -71,7 +72,22 @@ class MrimClient(private val context: Context) {
         return Result.success(Unit)
     }
 
+    private suspend fun ensureConnected(): Boolean {
+        if (connection.canSend()) return true
+        if (currentEmail.isNotEmpty() && currentPassword.isNotEmpty()) {
+            Log.d(TAG, "Reconnecting...")
+            login(currentEmail, currentPassword, _serverConfig)
+            // Wait for login
+            for (i in 0 until 50) {
+                if (_state.value == ConnectionState.LoggedIn) return true
+                delay(100)
+            }
+        }
+        return false
+    }
+
     suspend fun sendMessage(to: String, text: String): UInt {
+        ensureConnected()
         val seq = nextSeq()
         connection.sendPacket(MrimPacket(seq = seq, msgType = MrimConstants.MRIM_CS_MESSAGE, data = MrimPacketWriter().writeUL(0u).writeLPSAscii(to).writeLPS(text).writeEmptyLPS().toByteArray()))
         _incomingMessages.emit(MessageInfo(msgId = seq, from = currentEmail, to = to, text = text, isOutgoing = true))
@@ -79,30 +95,39 @@ class MrimClient(private val context: Context) {
     }
 
     suspend fun sendTypingNotification(to: String) {
-        connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_MESSAGE, data = MrimPacketWriter().writeUL(MrimConstants.MESSAGE_FLAG_NOTIFY).writeLPSAscii(to).writeLPS(" ").writeLPS(" ").toByteArray()))
+        if (connection.canSend()) {
+            connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_MESSAGE, data = MrimPacketWriter().writeUL(MrimConstants.MESSAGE_FLAG_NOTIFY).writeLPSAscii(to).writeLPS(" ").writeLPS(" ").toByteArray()))
+        }
     }
 
     suspend fun changeStatus(status: UserStatus, title: String = "", desc: String = "") {
-        connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_CHANGE_STATUS, data = MrimPacketWriter().writeUL(status.value).writeLPS(status.xstatusType).writeLPS(title).writeLPS(desc).writeUL(MrimConstants.FEATURE_ALL).toByteArray()))
+        if (ensureConnected()) {
+            connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_CHANGE_STATUS, data = MrimPacketWriter().writeUL(status.value).writeLPS(status.xstatusType).writeLPS(title).writeLPS(desc).writeUL(MrimConstants.FEATURE_ALL).toByteArray()))
+        }
     }
 
     suspend fun authorizeContact(email: String) {
-        connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_AUTHORIZE, data = MrimPacketWriter().writeLPSAscii(email).toByteArray()))
+        if (ensureConnected()) {
+            connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_AUTHORIZE, data = MrimPacketWriter().writeLPSAscii(email).toByteArray()))
+        }
     }
 
     suspend fun addContact(email: String, nickname: String, groupIndex: Int = 0, authMessage: String = ""): UInt {
+        ensureConnected()
         val seq = nextSeq()
         connection.sendPacket(MrimPacket(seq = seq, msgType = MrimConstants.MRIM_CS_ADD_CONTACT, data = MrimPacketWriter().writeUL(0u).writeUL(groupIndex.toUInt()).writeLPSAscii(email).writeLPS(nickname).writeEmptyLPS().writeLPS(authMessage).toByteArray()))
         return seq
     }
 
     suspend fun addGroup(name: String): UInt {
+        ensureConnected()
         val seq = nextSeq()
         connection.sendPacket(MrimPacket(seq = seq, msgType = MrimConstants.MRIM_CS_ADD_CONTACT, data = MrimPacketWriter().writeUL(MrimConstants.CONTACT_FLAG_GROUP).writeUL(0u).writeLPS(name).writeEmptyLPS().writeEmptyLPS().writeEmptyLPS().toByteArray()))
         return seq
     }
 
     suspend fun searchAnketa(criteria: Map<UInt, String>): UInt {
+        ensureConnected()
         val seq = nextSeq()
         val writer = MrimPacketWriter()
         criteria.forEach { (key, value) ->
@@ -131,7 +156,12 @@ class MrimClient(private val context: Context) {
         pingJob?.cancel(); pingJob = scope.launch {
             while (isActive && connection.isConnected) {
                 delay(pingIntervalSec * 1000)
-                try { connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_PING)) }
+                try { 
+                    if (!connection.sendPacket(MrimPacket(seq = nextSeq(), msgType = MrimConstants.MRIM_CS_PING))) {
+                        Log.e(TAG, "Ping failed (send error)")
+                        break
+                    }
+                }
                 catch (e: Exception) { Log.e(TAG, "Ping failed", e); break }
             }
         }
